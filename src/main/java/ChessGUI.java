@@ -6,7 +6,6 @@ import ch.astorm.jchess.core.Position;
 import ch.astorm.jchess.core.entities.*;
 import javafx.application.Application;
 import javafx.application.Platform;
-import javafx.geometry.Pos;
 import javafx.scene.Scene;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
@@ -16,7 +15,6 @@ import javafx.scene.layout.RowConstraints;
 import javafx.scene.layout.StackPane;
 import javafx.scene.shape.Rectangle;
 import javafx.stage.Stage;
-import javafx.application.Platform;
 
 
 import java.util.Map;

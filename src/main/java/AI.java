@@ -2,69 +2,149 @@ import ch.astorm.jchess.JChessGame;
 import ch.astorm.jchess.core.*;
 import ch.astorm.jchess.core.entities.*;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.io.*;
+import java.util.*;
+import java.util.concurrent.*;
 
 import static ch.astorm.jchess.JChessGame.Status.WIN_BLACK;
 import static ch.astorm.jchess.JChessGame.Status.WIN_WHITE;
 
 public class AI {
-    public JChessGame game;
-    public Color color;
-    public boolean isMaximizer;
-    public int depth;
-    public Map<Class<? extends Moveable>, Integer> pieceValues = new HashMap<>();
+    private JChessGame game;
+    private Color color;
+    private boolean isMaximizer;
+    private int depth;
+    private Map<Class<? extends Moveable>, Integer> pieceValues = new HashMap<>();
+    private TranspositionTable transpositionTable = new TranspositionTable();
+    private Move bestMoveFound;
 
     public AI(JChessGame game, int depth) {
-        // Create a new game with the same position as the given game
         this.game = game;
         this.color = game.getColorOnMove();
         this.isMaximizer = color == Color.WHITE;
         this.depth = depth;
-        this.pieceValues.put(Pawn.class, 1);
-        this.pieceValues.put(Knight.class, 3);
-        this.pieceValues.put(Bishop.class, 3);
-        this.pieceValues.put(Rook.class, 5);
-        this.pieceValues.put(Queen.class, 9);
+        this.pieceValues.put(Pawn.class, 10);
+        this.pieceValues.put(Knight.class, 33);
+        this.pieceValues.put(Bishop.class, 30);
+        this.pieceValues.put(Rook.class, 50);
+        this.pieceValues.put(Queen.class, 90);
         this.pieceValues.put(King.class, 1000);
+        loadTranspositionTable("transpositionTable.ser");
     }
 
-    public Move makeMove(JChessGame game) {
+    public void saveTranspositionTable(String filename) {
+        try (ObjectOutputStream out = new ObjectOutputStream(new FileOutputStream(filename))) {
+            out.writeObject(transpositionTable);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void loadTranspositionTable(String filename) {
+        try (ObjectInputStream in = new ObjectInputStream(new FileInputStream(filename))) {
+            transpositionTable = (TranspositionTable) in.readObject();
+        } catch (IOException | ClassNotFoundException e) {
+            transpositionTable = new TranspositionTable();
+        }
+    }
+
+    public List<Move> orderMoves(List<Move> moves) {
+        List<Move> modifiableMoves = new ArrayList<>(moves);
+        modifiableMoves.sort((move1, move2) -> {
+            game.play(move1);
+            int score1 = 0;
+            int score2 = 0;
+            try {
+                score1 = evaluate();
+            } finally {
+                game.back();
+            }
+            game.play(move2);
+            try {
+                score2 = evaluate();
+            } finally {
+                game.back();
+            }
+            return score2 - score1;
+        });
+        return modifiableMoves;
+    }
+
+    public Move iterativeDeepening(JChessGame game) {
         this.game = game;
         this.color = game.getColorOnMove();
         this.isMaximizer = color == Color.WHITE;
 
-        // Generate all possible moves for the current position
-        List<Move> legalMoves = this.game.getAvailableMoves();
+
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        FutureTask<Move> futureTask = new FutureTask<>(() -> {
+
+            // Generate all possible moves for the current position
+            List<Move> legalMoves = this.game.getAvailableMoves();
+            legalMoves = orderMoves(legalMoves);
+
+            Move bestMove = null;
+            int maxDepth = this.depth;
+            for (int depth = 1; depth <= maxDepth; depth++) {
+                this.depth = depth;
+                bestMove = makeMove(legalMoves);
+                this.bestMoveFound = bestMove;
+            }
+            this.depth = maxDepth;
+            return bestMove;
+        });
+
+        executor.execute(futureTask);
+        try {
+            // Get the result of the FutureTask, but only wait for 5 seconds
+            saveTranspositionTable("transpositionTable.ser");
+            return futureTask.get(5, TimeUnit.SECONDS);
+        } catch (InterruptedException | ExecutionException e) {
+        } catch (TimeoutException e) {
+            // The iterativeDeepening method didn't finish within 5 seconds
+            // The best move found so far will be returned
+        }
+
+        // Shut down the executor
+        executor.shutdown();
+
+        saveTranspositionTable("transpositionTable.ser");
+        return bestMoveFound;
+    }
+
+
+    public Move makeMove(List<Move> legalMoves) {
         Move bestMove = legalMoves.getFirst();
         if (this.isMaximizer) {
             int maxEval = Integer.MIN_VALUE;
             for (Move move : legalMoves) {
                 this.game.play(move);
-                int val = this.minimax(this.depth - 1, Integer.MIN_VALUE, Integer.MAX_VALUE, false);
-                if (val > maxEval) {
-                    maxEval = val;
-                    bestMove = move;
+                try {
+                    int val = this.minimax(this.depth - 1, Integer.MIN_VALUE, Integer.MAX_VALUE, false);
+                    if (val > maxEval) {
+                        maxEval = val;
+                        bestMove = move;
+                    }
+                } finally {
+                    this.game.back();
                 }
-                this.game.back();
             }
         } else {
             int minEval = Integer.MAX_VALUE;
             for (Move move : legalMoves) {
                 this.game.play(move);
-                int val = this.minimax(this.depth - 1, Integer.MIN_VALUE, Integer.MAX_VALUE, true);
-                if (val < minEval) {
-                    minEval = val;
-                    bestMove = move;
+                try {
+                    int val = this.minimax(this.depth - 1, Integer.MIN_VALUE, Integer.MAX_VALUE, true);
+                    if (val < minEval) {
+                        minEval = val;
+                        bestMove = move;
+                    }
+                } finally {
+                    this.game.back();
                 }
-                this.game.back();
             }
         }
-        System.out.println("Best move: " + bestMove);
         return bestMove;
-
     }
 
     public int evaluate() {
@@ -109,40 +189,97 @@ public class AI {
             evaluation += factor * (value + moves);
         }
 
-        return evaluation;
+        return evaluation + new Random().nextInt(2) - 1;
+    }
+
+    public String toFen(Position pos) {
+        StringBuilder fen = new StringBuilder();
+
+        Map<Moveable, String> pieceMap = new HashMap<>();
+        pieceMap.put(new Pawn(Color.WHITE), "P");
+        pieceMap.put(new Pawn(Color.BLACK), "p");
+        pieceMap.put(new Knight(Color.WHITE), "N");
+        pieceMap.put(new Knight(Color.BLACK), "n");
+        pieceMap.put(new Bishop(Color.WHITE), "B");
+        pieceMap.put(new Bishop(Color.BLACK), "b");
+        pieceMap.put(new Rook(Color.WHITE), "R");
+        pieceMap.put(new Rook(Color.BLACK), "r");
+        pieceMap.put(new Queen(Color.WHITE), "Q");
+        pieceMap.put(new Queen(Color.BLACK), "q");
+        pieceMap.put(new King(Color.WHITE), "K");
+        pieceMap.put(new King(Color.BLACK), "k");
+
+        Map<Coordinate, Moveable> pieces = pos.getMoveables();
+        int empty = 0;
+        for (int i = 0; i < 8; i++) {
+            for (int j = 0; j < 8; j++) {
+                Coordinate coord = new Coordinate(i, j);
+                Moveable piece = pieces.get(coord);
+                if (piece == null) {
+                    empty++;
+                } else {
+                    if (empty > 0) {
+                        fen.append(empty);
+                        empty = 0;
+                    }
+                    fen.append(pieceMap.get(piece));
+                }
+            }
+        }
+
+
+        return fen.toString();
+
     }
 
     public int minimax(int depth, int alpha, int beta, boolean isMaximizer) {
+
+        List<Integer> previousScore = transpositionTable.get(toFen(game.getPosition()));
+        if (previousScore != null && previousScore.get(1) >= depth) {
+            return previousScore.getFirst();
+        }
+
         if (depth == 0) {
             return quiescenceSearch(alpha, beta, isMaximizer, 5);
         }
 
         List<Move> legalMoves = game.getAvailableMoves();
+
+        legalMoves = orderMoves(legalMoves);
         if (isMaximizer) {
             for (Move move : legalMoves) {
                 game.play(move);
-                int eval = minimax(depth - 1, alpha, beta, false);
-                game.back();
-                if (eval >= beta) {
-                    return beta;
-                }
-                if (eval > alpha) {
-                    alpha = eval;
+                try {
+                    int eval = minimax(depth - 1, alpha, beta, false);
+                    if (eval > alpha) {
+                        alpha = eval;
+                    }
+                    if (alpha >= beta) {
+                        break;  // Beta cut-off
+                    }
+                } finally {
+                    game.back();
                 }
             }
+            transpositionTable.put(toFen(game.getPosition()), alpha, this.depth - (this.depth - depth));
             return alpha;
         } else {
             for (Move move : legalMoves) {
                 game.play(move);
-                int eval = minimax(depth - 1, alpha, beta, true);
-                game.back();
-                if (eval <= alpha) {
-                    return alpha;
-                }
-                if (eval < beta) {
-                    beta = eval;
+                try {
+
+                    int eval = minimax(depth - 1, alpha, beta, true);
+                    if (eval < beta) {
+                        beta = eval;
+                    }
+                    if (beta <= alpha) {
+                        break;  // Alpha cut-off
+                    }
+                } finally {
+                    game.back();
                 }
             }
+            transpositionTable.put(toFen(game.getPosition()), beta, this.depth - (this.depth - depth));
             return beta;
         }
     }
@@ -181,25 +318,33 @@ public class AI {
         if (isMaximizer) {
             for (Move move : captures) {
                 game.play(move);
-                int score = quiescenceSearch(alpha, beta, false, depth-1);
-                game.back();
-                if (score >= beta) {
-                    return beta;
-                }
-                if (score > alpha) {
-                    alpha = score;
+                try {
+                    int score = quiescenceSearch(alpha, beta, false, depth - 1);
+                    if (score >= beta) {
+                        return beta;
+                    }
+                    if (score > alpha) {
+                        alpha = score;
+                    }
+                } finally {
+
+                    game.back();
                 }
             }
         } else {
             for (Move move : captures) {
                 game.play(move);
-                int score = quiescenceSearch(alpha, beta, true, depth-1);
-                game.back();
-                if (score <= alpha) {
-                    return alpha;
-                }
-                if (score < beta) {
-                    beta = score;
+                try {
+
+                    int score = quiescenceSearch(alpha, beta, true, depth - 1);
+                    if (score <= alpha) {
+                        return alpha;
+                    }
+                    if (score < beta) {
+                        beta = score;
+                    }
+                } finally {
+                    game.back();
                 }
             }
         }

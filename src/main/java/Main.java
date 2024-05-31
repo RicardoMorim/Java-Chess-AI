@@ -33,11 +33,11 @@ public class Main {
             List<Move> legalMoves = game.getAvailableMoves();
             // Make a move
             if (!legalMoves.isEmpty()) {
-                Move move = ai.makeMove(game1);
+                Move move = ai.iterativeDeepening(game1);
+                System.out.println(move);
                 game.play(move);
                 game1.play(move);
 
-                System.out.println("Im here");
 
                 UnicodePositionRenderer.render(System.out, game.getPosition());
 
